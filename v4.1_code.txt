@@ -1,0 +1,1041 @@
+
+;extensions [array lt math r]
+
+
+; v2.7 added ability to start from the same random seed to reproduce a model run
+; v2.7 made Beneficial-Microbe turn a bit so look like they are moving more naturally
+; v2 changed bacteria to benefical microbe -- shape and movement matches yeast
+; v2 decided on proper time scaleing
+; v3 added expansion and changed benefical microbes to move correctly
+; v3.2 fixed spelling of Beneficial and merged redundant functions (create-microbe, move-microbe, free-microbe)
+; v3.3 merged biofilm procedures
+; v3.4 improved swelling physics: swelling now widens around a sufficiently sized clump of yeast rather than ahead of it, and the clump causing the swelling randomly seperates and moves alongside
+;                                     the widening of the intestine as though they were embedded into the mucus and move as the mucus layer moves
+; v3.45 unified turtle variables: now all breeds have adhesion and time-stuck rather than each breed having their own specifically named variable for each purpose
+; v3.55 biofilm state yeast can now become unstuck with small probability (implemented, still tweaking. Clumps of biofilm yeast in the distended intestine now move 0.5 patch every 5 ticks
+; v3.555 using sigmoid function to determine biofilm unstickiness
+; v3.6 yeast secrete onto every patch they touch
+; v3.7 changed swelling  progression; more individual and localized rather than blanket distension
+; v3.71 experimental spilling over method for biofilm
+; v3.72 2D representation build (WIP)
+; v3.73 filled canal build
+; v3.75 attempting to tweak model into properly representing beginning and end stages, not either or. also weighting towards adhearing to the beginning (user input)
+; v3.8 tweaking swelling trigger algorithim to go as far as it should while maintaining proper timeline, adding death condition
+; v3.81 attempted to fix bugs, broke everything
+; v3.82 minor changes, tweaking death condition by adding scaling chance for death and beginning to implement probiotic
+; v3.83 added probiotic agents and SM secretion
+; v3.84 fixing swelling
+; v3.9 new swelling function, working on spilling over functions
+; v3.905 testing new class of pathogenic yeast for spilling over
+; v4.1 cleaned up code  and redundancies
+
+;global  and agent variables
+
+;Diagonal coding
+;pxcor = 0 and pycor <= 5 or
+;abs pxcor = (pycor + 2) and pycor < 4 or
+;abs pxcor = (pycor + 8) and pycor < 3
+
+globals
+[
+
+  g-Move-Heading
+  g-Start-Heading
+
+  g-Mucous-Patch
+  g-Lumen-Color
+  g-Cell-Height
+  g-Cell-Patch
+
+  g-Bottom-Mucous-Top-Y
+  g-Bottom-Mucous-Bottom-Y
+  g-Top-Mucous-Top-Y
+  g-Top-Mucous-Bottom-Y
+
+  g-Seed
+  g-clump-move
+  Yeast-slip-prob
+  Yeast-biofilm-radius
+
+  g-dead
+  g-increasing-chance
+  g-natural-check
+  g-death-increment
+  g-c
+  g-k
+
+  g-Biofilm-Distend-Thresh
+  g-Swell-Thresh
+  g-Clump-Size
+
+  g-death-tracker
+  g-passed
+  g-pharynx-distension
+
+
+
+
+
+
+]
+
+breed [ yeast a-yeast ]                    ;creates yeast turtle breed
+
+breed [ Beneficial-Microbe prob ]             ;creates Beneficial-Microbe turtle breed
+
+
+
+
+patches-own [
+  Patch-Type                   ;creates the variable Patch-Type-- can be mucous, lumen, or cell
+                               ;p-Yeast-biofilm                           ;creates the variables for Beneficial-Microbel molecule concentrations as well as both biofilm levels EDIT: commented out in case needed later
+  p-SM
+  ;p-Beneficial-Microbe-biofilm                 ;EDIT: commented out in case need later
+  p-Biofilm
+
+  p-ID
+  p-Direction                            ; whether a patch is above or below y = 0. Patches with pycor > 0 have this set to 1. Patches with pycor < 0 have this set to -1. Patches on y = 0 have this set to 0.
+]
+
+
+
+turtles-own
+[
+  adhesion                          ;creates variables for  adhesion (unstuck, stuck, and biofilm) and tracks how long a microbe is stuck
+  time-stuck                        ;to then become a biofilm
+  move-speed
+]
+
+
+
+
+
+;Setup and Go procedures
+
+
+to setup                                  ;setup procedure
+  clear-all                               ;resets model and calls on the following setup procedures
+  setup-globals                           ;globals, cells, muscous, & lumen
+  setup-cells
+  setup-Mucous
+  setup-Lumen
+  ask patches with [pycor != 0]
+  [
+    set p-Direction ( pycor / abs(pycor) )
+  ]
+
+
+  ifelse seed-on                          ; if the seed-on switch is set, use the number in the g-input-seed box to start the simulation
+    [set g-Seed g-input-seed]
+  [set g-Seed new-seed]                 ; otherwise, start with a random seed
+  random-seed g-Seed
+  set g-input-seed g-Seed
+  reset-ticks
+  (foreach (sort patches) (range count patches) [ [p n] ->
+    ask p [ set p-ID n ]
+  ])
+  ask patches with [ Patch-Type = "Mucous" ] [ set p-Biofilm 150 ]
+
+end
+
+
+
+to go                                   ;go procedure
+  tick                                  ;advances and updates model with each tick
+
+
+  set g-clump-move ticks                                    ; counts how many ticks have passed
+  Worm-Eat                              ;calls the procedures which simulate worm eating and Beneficial-Microbe molecule secretion
+
+  ask patches [ if (p-SM > 0) [ set p-SM ( p-SM - Beneficial-Microbe-molecule-degradation-rate ) ] ] ; degrade SM concentration to reflect peristalsis and half-life
+  ask Beneficial-Microbe [ secrete ]
+
+  ask yeast [(  ifelse
+    adhesion = "unstuck" [free-microbe "yeast"]                    ;if Yeast are unstuck then the free-yeast procedure is called
+    adhesion = "stuck" [stuck-yeast]                     ;if Yeast are stuck then the stuck-yeast procedure is called
+    adhesion = "biofilm" [Biofilm-Build "yeast"]                 ;If Yeast are biofilm then the biofilm-yeast procedure is called
+
+  )
+    push-aside
+  ]
+
+
+
+  ask Beneficial-Microbe [(  ifelse
+    adhesion = "unstuck" [free-microbe "probi"]                    ;if Beneficial-Microbe are unstuck then the free-Beneficial-Microbe procedure is called
+    adhesion = "stuck" [Stuck-Beneficial-Microbe]                     ;if Beneficial-Microbe are stuck then the stuck-Beneficial-Microbe procedure is called
+
+  )]
+  skim
+  if (ticks mod 200 = 0)
+  [
+    set g-passed 0        ; reset variable to keep track of how many microbes are reaching the end
+  ]
+
+
+
+
+
+
+
+  ask patches
+  [
+
+    if Patch-type = "Lumen"
+    [
+      (
+        ifelse
+        show-conc-of = "SM"
+        [
+          set pcolor scale-color 109 p-SM 300 0
+
+        ]
+        show-conc-of = "biofilm"
+        [
+          set pcolor scale-color 35 p-Biofilm 300 0
+
+        ]
+
+      )
+    ]
+
+  ]                                                           ;lumen patches change color on a gradient with Beneficial-Microbel molecule levels
+
+  if g-dead = false                                      ; if the end of the pharynx is not at the end of the worm, check to see if it needs to extends
+  [
+    swell-redone
+    ask patches with [Patch-Type = "Lumen"]
+    [
+
+      ask neighbors4 with [Patch-Type = "Cell"] [set Patch-Type "Mucous" set pcolor green] ;; no case where lumen patches should be sharing an edge with cell patches.
+                                                                                           ;; this will also fix our swelling columns such that the final patch becomes a mucous patch
+      ask patches with [Patch-Type = "Mucous"]
+      [
+
+        let check neighbors4 with [Patch-Type = "Lumen" ]
+        if ( count(check) > 3 ) [ set Patch-Type "Lumen" ]
+
+      ]
+      (
+        ifelse                                                                               ;; make sure any all lumen patches reflect their new concentrations as their proper color gradients
+        show-conc-of = "SM"
+        [
+          set pcolor scale-color 109 p-SM 300 0
+        ]
+        show-conc-of = "biofilm"
+        [
+          set pcolor scale-color 35 p-Biofilm 300 0
+        ]
+
+      )
+
+
+    ]
+
+
+  ]
+
+
+
+
+  set g-dead worm-dead?
+  ;view-stages ;for parameter sweeps, comment out otherwise
+  if(g-dead) [
+    ;user-message "The worm has died" ;; comment out for behaviour space
+    set g-pharynx-distension count ( patches with [ Patch-Type = "Mucous" and abs(pycor) > 1 and pxcor < 1 ] )
+    stop
+  ]
+
+end
+
+
+
+
+
+to swell-redone
+
+
+  ask patches with [Patch-Type = "Lumen"] ;; ensures no lumen patch is touching a Cell patch. In theory, a layer of mucuous should always be between the lumen and the epithelial cell,
+  [
+
+
+    ask neighbors4 with [Patch-Type = "Cell"] [set Patch-Type "Mucous" set pcolor green] ;; makes sure there is always a mucous patch between a Cell and Lumen patch
+
+
+  ]
+
+
+  let swelling []
+
+  ask patches with [ patch-type = "Mucous" ]
+  [
+
+    let d p-Direction
+    let thisx pxcor
+    let thisy pycor
+
+
+    let biofilm-near 0
+    let nearby neighbors with [ not( patch-type = "Cell" ) ]
+    ask nearby [ set biofilm-near ( p-Biofilm + biofilm-near ) ]
+    let avg-biofilm ( biofilm-near / (count nearby) )
+    let counthere count(turtles-here)
+
+    if ( counthere >  g-Swell-Thresh and avg-biofilm >= ( g-Biofilm-Distend-Thresh * abs(pycor) ) and ( abs(pycor) < 9 ) )
+    [
+      set swelling lput p-ID swelling
+
+
+
+    ]
+  ]
+
+
+  foreach swelling [
+    ? ->
+    let id ?
+
+    let start one-of patches with [ p-ID = ?]  ;; should always be the distending mucous patch
+    let thisx 0
+    let thisy 0
+    let d 0
+    let b-move 0
+    let SM-move 0
+    let agents-move no-turtles
+    let b-here -1
+    let SM-here -1
+    let agents-here no-turtles
+    let currenty 0
+
+    ask start [
+      set thisx pxcor
+      set thisy pycor
+      set d p-Direction
+      set Patch-Type "Lumen"
+      set pcolor 59
+
+
+
+    ]
+
+    ask patch thisx currenty
+    [
+
+      set b-here p-Biofilm          ;; store biofilm conc already here
+      set SM-here p-SM              ;; store SM conc already here
+      set agents-here turtles-here  ;; store all agents already here
+
+      set p-Biofilm ( b-here / 2 )                      ;; overwrite biofilm conc with the biofilm conc from the previous patch (0 if first)
+      set p-SM 0                          ;; overwrite SM conc with SM conc from the previous patch (0 if first)
+
+      set b-move ( b-here / 2 )                         ;; biofilm conc here becomes the conc that needs to be moved
+      set SM-move SM-here                       ;; SM conc here becomes the conc that needs to be moved
+      set agents-move agents-here               ;; agents already here need to be moved next
+
+    ]
+
+
+    loop
+    [
+
+      set currenty ( currenty + d )
+
+      ask patch thisx currenty
+      [
+        set b-here p-Biofilm          ;; store biofilm conc already here
+        set SM-here p-SM              ;; store SM conc already here
+        set agents-here turtles-here  ;; store all agents already here
+
+        set p-Biofilm b-move                      ;; overwrite biofilm conc with the biofilm conc from the previous patch (0 if first)
+        set p-SM SM-move                          ;; overwrite SM conc with SM conc from the previous patch (0 if first)
+        ask agents-move [ setxy xcor (ycor + d)
+        ] ;; move agents from previous patch to current patch
+
+        set b-move b-here                         ;; biofilm conc here becomes the conc that needs to be moved
+        set SM-move SM-here                       ;; SM conc here becomes the conc that needs to be moved
+        set agents-move agents-here               ;; agents already here need to be moved next
+
+      ]
+
+
+
+      if ( abs(currenty) > abs(thisy) ) [ stop ]
+
+
+    ]
+
+
+
+
+
+  ]
+
+
+
+end
+
+
+
+
+
+
+
+;Procedures called during Setup
+
+
+to setup-globals                            ;globals setup procedure
+                                            ;assigns fixed values to all global varibales & shapes to turtle breeds
+  set  g-Cell-Height 9                      ;assigns the x and y cor of the mucous patch layers
+
+  set g-Biofilm-Distend-Thresh  75
+  set g-Move-Heading 10
+
+  set-default-shape yeast "circle"
+  set-default-shape Beneficial-Microbe "circle"
+  set g-dead False
+
+  set g-Bottom-Mucous-Bottom-Y  min-pycor + g-Cell-Height
+  set g-Bottom-Mucous-Top-Y  min-pycor + g-Cell-Height + 0.5
+  set g-Top-Mucous-Bottom-Y  max-pycor  -  g-Cell-Height - 0.5
+  set g-Top-Mucous-Top-Y  max-pycor - g-Cell-Height
+  set g-clump-move 0
+  set g-increasing-chance random-between-int 500 800 ;base chance worm dies
+
+  set g-Start-Heading 50
+  set g-Swell-Thresh 2
+  set g-Clump-Size 4
+  set Yeast-slip-prob 0.26
+  set Yeast-biofilm-radius 0.15
+  set g-passed 0
+  set g-death-increment 0
+  set g-natural-check random-between-int 500 900
+  set g-death-tracker -1
+  set g-pharynx-distension -1
+  set g-c 2.8
+  set g-k 3.4
+
+
+
+end
+
+;12microns = 4 yeast cells tall (funnel opening)
+;6 microns = 2 yeast cells (funnel depth)
+
+to setup-Mucous                            ;mucous setup procedure
+  set g-Mucous-Patch patches with            ;sets color & patch type of the mucous layer which is defined with using global variables
+      [ (pycor >= g-Bottom-Mucous-Bottom-Y and pycor <= g-Bottom-Mucous-Top-Y )
+        or
+        (pycor >= g-Top-Mucous-Bottom-Y and pycor  <= g-Top-Mucous-Top-Y )
+  ]
+  ask g-Mucous-Patch [
+    set pcolor 56
+    set Patch-Type "Mucous"
+  ]
+  ask patch -20 2 [
+    set pcolor 56
+    set Patch-Type "Mucous"
+  ]
+  ask patch -20 -2 [
+    set pcolor 56
+    set Patch-Type "Mucous" ]
+
+
+
+end
+
+
+
+to setup-Lumen                           ;lumen setup procedure
+  ask patches [                          ;defines the lumen to be patches between the mucous layers & assigns color
+    if (Patch-Type != "Mucous" and pycor >  g-Bottom-Mucous-Top-Y and pycor <  g-Top-Mucous-Bottom-Y )
+        [ set Patch-Type "Lumen" set pcolor white]
+
+    ;sets values for Beneficial-Microbel and yeast molecule/biofilm levels at 0
+    set p-SM 0
+    set p-Biofilm 0
+  ]
+  ask patch -20 1 [
+    set pcolor white
+    set Patch-Type "Lumen"
+  ]
+  ask patch -20 -1 [
+    set pcolor white
+    set Patch-Type "Lumen"
+  ]
+end
+
+
+
+to setup-cells                                                   ;epithelial cell setup procedure
+  set g-Cell-Patch patches with [Patch-Type != "Mucous" and Patch-Type != "Lumen"]
+  ask g-Cell-Patch [                                             ;defines epithelial cells as any patch not set as mucous or lumen & sets color
+    set pcolor 8
+    set Patch-Type "Cell"
+  ]
+end
+
+
+
+
+
+;Procedures called while the worm Eats
+
+
+to Worm-Eat
+  if (Eat)         [                                                   ;simulates C. elegans eating by creating 1 yeast/1 Beneficial-Microbe a determined probability
+                                                                       ;if not any? yeast with [xcor = min-pxcor] [                        ;worm can only eat a yeast if there is not one already there
+    create-microbe Yeast-intake-prob  -20 -20  -0.5 0.5 "yeast"        ;probability value assigned by appropriate sliders
+
+    create-microbe Beneficial-Microbe-intake-prob   min-pxcor min-pxcor g-Bottom-Mucous-Top-Y g-Top-Mucous-Bottom-Y  "probi"  ]
+end
+
+
+
+to random-position [#xmin #xmax #ymin #ymax]                           ;random-position procedure
+  setxy (random-between #xmin #xmax 6) ( random-between #ymin #ymax 6)     ;sets x and y cor to random values bewteen the assigned max and min of x and y
+end
+
+
+
+
+to create-microbe [#prob #min-x #max-x #min-y #max-y class]          ;procedure to create a Microbe
+  if (class = "probi")                                           ; if told to create a Beneficial-Microbe, uses appropriate procedure
+  [
+    if ((random-between 0 100 6) <= #prob)[                          ;creates Beneficial-Microbe if a random value chosen is less than or equal to the set Beneficial-Microbe intake probability
+      create-Beneficial-Microbe 1 [
+        random-position #min-x #max-x #min-y #max-y                 ;calls random position procedure
+        set heading random-between-int (90 - g-Start-Heading) (90 + g-Start-Heading)                                        ;sets Beneficial-Microbe direction
+        set color 97                                       ;sets Beneficial-Microbe color and size
+        set size .7
+        set adhesion "unstuck"                               ;sets Beneficial-Microbe as unstuck and time stuck at 0
+        set time-stuck 0
+      ]
+    ]
+  ]
+  if ( class = "yeast" )                                           ;if told to create a yeast, uses appropriate procedure
+  [
+    if ((random-between 0 100 6) <= #prob) [                         ;creates yeast if a random value chosen is less than or equal to the set yeast intake probability
+      create-yeast 1 [
+        random-position #min-x #max-x #min-y #max-y             ;calls random position procedure
+        set color  3                                        ;(dark grey) sets yeast color and size
+        set size .7
+        set heading random-between-int (90 - g-Start-Heading) (90 + g-Start-Heading)                                          ;need to be heading down lumen so see yeast in front of them
+        set adhesion "unstuck"                                ;sets yeast as unstuck and time stuck at 0
+        set time-stuck 0
+      ]
+    ]
+
+  ]
+
+
+end
+
+
+
+
+
+;Yeast Procedures
+
+to free-microbe [ class ]                                                                   ;Free microbe procedure -- already within an 'ask yeast' statement LIZ
+
+  if (Patch-Type = "Lumen" and ( xcor >= (max-pxcor - 0.2) and xcor <= max-pxcor)) [die]  ;keeps yeast within the lumen
+  let yeast-ahead one-of other yeast with [adhesion = "biofilm"] in-cone 0.5 100                      ; need to look whether yeast in front of them -- could be on same patch
+
+
+
+
+
+  if  ( class = "yeast" ) or ( class = "probi" ) ;and ( yeast-ahead = nobody )
+  [
+    move-microbe class
+  ]                                   ;if no yeast on patch ahead call move procedure
+
+
+  let x random-between 0 100 6           ;yeast stick if a randomly chosen value is less than the assigned yeast adhesion probability
+
+  let pB 0
+  let pSM 0
+  let pType ""
+  ask patch-here [ set pB p-Biofilm set pSM p-SM set pType Patch-Type ]
+  if ( pType = "Mucous" ) [ set pB 50 ]
+  let weightB ( 1 + (pB - pSM) / 3 )
+
+  if( class = "yeast" )
+  [
+    ;;if (x < (Yeast-adhesion-prob - p-SM + p-Biofilm )) and (pType = "Mucous") ;old if statement
+    if (x < ( Yeast-adhesion-prob + weightB )) ;new if, initial adhesion should depend on how much biofilm is present on patch and have a high chance to adhear to mucous
+    [
+      set adhesion "stuck"                                  ;sets the yeast's state as stuck
+      set color 44
+    ]
+  ]
+  if (class = "probi" )
+  [
+
+    if (x < ( Beneficial-microbe-adhesion-prob + weightB ))
+    [
+      set adhesion "stuck"                                 ;sets bacterium state to stuck
+      set color 104
+    ]
+
+  ]
+
+end
+
+
+
+to move-microbe [ class ]                                                  ;move procedure
+
+
+  if ([ Patch-Type ] of patch-ahead 0.1  = "Mucous" ) [                                ;if yeast are in the mucous set heading to a random direction
+
+
+    set heading random-between (90 - g-Move-Heading) (90 + g-Move-Heading) 6
+    fd 0.1
+
+  ]            ;set x and y to current x & current y + defined global vairable
+  let yeast-ahead one-of other yeast in-cone 1 100
+  if ([ Patch-Type ] of patch-ahead 0.1  = "Lumen" )
+  [                                 ;if yeast in the lumen set the heading to random within range of degrees and move forward by yeast speed
+    if (xcor > 20)
+    [
+      set g-passed (g-passed + 1)
+      die
+    ]
+
+
+    set heading random-between-int (90 - g-Move-Heading) (90 + g-Move-Heading)
+    if( class = "yeast") [ fd Yeast-Speed ]
+    if( class = "probi") [ fd Beneficial-microbe-Speed ]
+  ]
+  ;fd Yeast-Speed  ]
+  if (xcor > 20)
+  [
+    set g-passed (g-passed + 1)
+    die
+  ]
+
+
+  if ([ Patch-Type ] of patch-ahead 0.1  = "Cell" ) [ setxy xcor ycor ]                ;if yeast in epithelial cells set x and y to current x and y cor
+end
+
+
+
+
+
+to redistribute [ surround amount ]
+
+
+  ask surround
+  [
+    let currentconc p-Biofilm
+
+    ifelse (currentconc > 100 and amount > 0.01)
+    [
+      set surround neighbors with [Patch-Type = "Lumen"]
+      set amount ( amount / count(surround) )
+      ;redistribute surround amount
+    ]
+    [
+      set p-Biofilm (p-Biofilm + amount)
+
+    ]
+
+
+  ]
+
+
+
+end
+
+
+
+
+to Biofilm-Build [ class ]                                                     ;biofilm procedure
+
+
+  if(class = "yeast" and adhesion = "biofilm")
+  [
+    set time-stuck (time-stuck + 1)               ;increases the yeast time stuck
+
+
+    let current-conc 0
+    ask patch-here
+    [
+      ifelse ( Patch-Type != "Mucous" )
+      [
+        set current-conc p-Biofilm
+
+        ifelse ( current-conc < 250 )
+        [
+          set p-Biofilm (p-Biofilm + Yeast-biofilm-secretion-rate)
+
+        ]
+        [
+          redistribute (neighbors4 with [Patch-Type = "Lumen" ]) (Yeast-biofilm-secretion-rate )
+        ]
+      ]
+      [
+        redistribute (neighbors4 with [Patch-Type = "Lumen" ]) (Yeast-biofilm-secretion-rate )
+      ]
+
+
+
+
+
+    ]
+
+    let henshin false
+    let ts time-stuck
+
+    ask patch-here
+    [
+
+
+
+      if ( ts > 800 and p-Biofilm > 250 ) [ set henshin true ]
+
+    ]
+    if (henshin)
+    [
+      set adhesion "inactive"
+      set color red
+    ]
+
+
+
+
+  ]
+
+
+
+
+end
+
+to secrete
+
+  ask patch-here
+  [
+
+    ifelse (p-SM > 200)
+    [
+
+      ask neighbors with [Patch-Type = "Lumen"]
+      [
+
+        if (p-SM < 200) [set p-SM ((p-SM + (Beneficial-Microbe-molecule-secretion-rate / 4 )))]
+
+      ]
+
+
+    ]
+    [
+      set p-SM (p-SM + Beneficial-Microbe-molecule-secretion-rate)
+    ]
+
+
+  ]
+
+
+
+
+
+
+
+
+
+end
+
+
+
+
+
+to-report random-between [ #min #max #decimals]                          ;report procedure for random-between
+  report #min + precision ( random-float (#max - #min) ) #decimals       ;reports a value equal to the min + a randomly chosen vaule greater than or equal to 0 but less than (max-min)
+end
+
+to-report random-between-int [ #min #max ]                          ;report procedure for random-between
+  report #min + random (#max - #min)                      ;reports a value equal to the min + a randomly chosen vaule greater than or equal to 0 but less than (max-min)
+end
+
+
+
+
+
+;Beneficial-Microbe Procedures
+
+
+to Stuck-Beneficial-Microbe                                               ;Stuck Beneficial-Microbe procedure
+
+  set time-stuck (time-stuck + 1)             ;increases the Beneficial-Microbe time stuck
+  let biof -1
+  ask patch-here [ set biof p-Biofilm ]
+  let x random-between-int 0 100                   ; other microbes getting stuck to them, but I don't see that represented here. Perhaps checking if should turn to biofilm first then a more general unstick check that is weighted
+  if x < (( Beneficial-Microbe-deadhesion-Prob ) - biof) [
+    set adhesion "unstuck"                           ;sets bacterium state as unstuck and resets their time stuck counter
+    set time-stuck 0
+  ]
+
+end
+
+
+
+to stuck-yeast                                              ;stuck yeast procedure
+
+  set time-stuck (time-stuck + 1)               ;increases the yeast time stuck
+
+  let nearby-stuck-yeast other yeast in-radius Yeast-biofilm-radius with [time-stuck >= 12]  ; check to see if there are any other
+  let pB 0
+  let pSM 0
+  let pType ""
+  ask patch-here [ set pB p-Biofilm set pSM p-SM set pType Patch-Type ]
+  if ( pType = "Mucous" ) [ set pB 50 ]
+  let weightB ( 1 + (pB - pSM) / 3 )                                                                                                        ; yeast nearby that have been stuck a while
+
+  let nearby-unstuck-yeast other yeast in-radius 0.9     ; check to see if any unstuck yeast nearby
+
+  let conc 0
+  ask patch-here [set conc p-Biofilm]
+
+  ifelse                 ;if yeast have been stuck as long as the set threshold and nearby yeast are stuck they become biofilm
+  (time-stuck >= 12) and any? nearby-stuck-yeast
+  [
+    set color orange
+    set adhesion "biofilm"
+
+  ]
+
+  [ let x random-between 0 100 6       ; if no yeast stuck nearby, see if should become unstuck
+    if x < Yeast-deadhesion-Prob - weightB - time-stuck
+    [
+      set adhesion "unstuck"                          ;sets the yeast's state as unstuck, resets the yeast's time stuck
+      set color 3
+      set time-stuck 0
+    ]
+  ]
+
+
+end
+
+
+
+
+
+
+to skim ;gives topmost layer of orange yeast chance to slide off clumps
+
+  if((g-clump-move mod 45) = 0)
+  [
+    let topmostLayer turtles with [adhesion = "biofilm"] with-min [abs(ycor)]
+
+    let x random-between 0 100 6
+
+    ask topmostLayer
+    [
+      let end-patch -42
+      ask patch-here [set end-patch pxcor]
+      let nearby-stuck-yeast other turtles in-radius 1 with [adhesion = "biofilm"]
+      if((end-patch <= 19) and (x < Yeast-deadhesion-Prob))
+      [
+        let is-Muc FALSE
+        let is-Cell FALSE
+        ask patch-here [if(Patch-Type = "Mucous") [set is-Muc TRUE]]
+        ask patch-ahead 0.7 [if(Patch-Type = "Cell") [set is-Cell TRUE]]
+        if((xcor + 0.5) < 20 and not(is-Muc)) and not(is-Cell)
+        [
+          set color 44
+          set adhesion "unstuck"
+          set heading random-between (90 - g-Move-Heading) (90 + g-Move-Heading) 6
+          forward 0.4
+        ]
+        ;;if((xcor + 0.5) < 20 and (is-Muc)) and not(is-Cell) [forward 0.1]
+
+      ]
+    ]
+
+  ]
+
+end
+
+
+
+
+
+
+to-report count-biofilm
+
+  report count(turtles-here with [adhesion = "biofilm"])
+
+end
+
+to-report sigmoid [ x c k ]
+
+  let func 1 + exp( -1 * k * ( x - c) )
+  report func ^ -1
+
+end
+
+
+to-report worm-dead?
+
+
+  let distended? false ; is the intestine distended enough to kill the worm from stress?
+  let natural? false ; random chance to die every so often
+
+
+  if ticks = g-natural-check
+  [
+    let totalDProb Worm-Death-Probability + g-death-increment
+    let rC random-between 0 1 3
+    ifelse ( ( rC < totalDProb ) )  ; if the worm death probability set by the user triggers AND the current ticks mod chance = 0, the worm dies of stress or natural causes
+    [
+
+      set g-death-tracker 2
+      set natural? true
+
+    ]
+    [
+      set g-natural-check ( g-natural-check + random-between-int 300 600 )
+      set g-death-increment ( g-death-increment + 0.005 + g-death-increment )
+
+    ]
+
+  ]
+
+
+
+  if ticks = g-increasing-chance
+  [
+    let mucous patches with [ patch-type = "Mucous" ]
+    let cumuprob 0
+    ask mucous
+    [
+
+      set cumuprob ( cumuprob + ( sigmoid abs(pycor) g-c g-k ) )
+
+    ]
+    set cumuprob ( cumuprob / ( count( mucous ) ) )
+    let dam ( random-between 0 1 4 )
+
+
+    ifelse ( dam < cumuprob )
+    [
+      set g-death-tracker 1
+      set distended? true
+
+    ]
+    [
+      let chance random-between-int 200 500 ; amount of ticks to pass before distension is checked again
+      set g-increasing-chance ( g-increasing-chance + chance )
+
+
+    ]
+  ]
+
+
+
+  report ( distended? or natural? ) ;
+
+
+end
+
+
+
+
+
+
+
+
+
+to damage-check
+
+  show 1
+  show count(patches with [patch-type = "Mucous" and abs(pycor) = 1])
+  show 2
+  show count(patches with [patch-type = "Mucous" and abs(pycor) = 2])
+  show 3
+  show count(patches with [patch-type = "Mucous" and abs(pycor) = 3])
+  show 4
+  show count(patches with [patch-type = "Mucous" and abs(pycor) = 4])
+  show "total"
+  show count(patches with [patch-type = "Mucous" and abs(pycor) >= 1])
+
+end
+
+
+
+to push-aside
+
+  let occupied 0
+  let yval 0
+
+  ask patch-here [set occupied count( turtles-here with [ time-stuck <= 300 ] ) set yval pycor]
+  if(occupied > (g-Clump-Size)) [
+
+    let dieroll random-between-int 1 6
+    let moving (occupied - g-Clump-Size)
+    ask up-to-n-of moving turtles-here with [ adhesion != "inactive" and adhesion != "biofilm"]
+    [
+      ifelse ( dieroll < 5 )
+      [
+        move-to one-of neighbors with [not(Patch-Type = "Cell") and (abs(pycor) <= abs(yval)) ]
+        setxy (xcor + random-between -0.3 0.3 6) (ycor + random-between -0.3 0.3 6)
+        set adhesion "unstuck"
+        set color 3
+        set time-stuck 0
+      ]
+      [
+        move-to one-of neighbors with [ not(Patch-Type = "Cell") ]
+        setxy (xcor + random-between -0.3 0.3 6) (ycor + random-between -0.3 0.3 6)
+        set adhesion "unstuck"
+        set color 3
+        set time-stuck 0
+      ]
+
+
+    ]
+  ]
+
+
+end
+
+
+to view-stages
+
+  if ticks = 1000 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage1.png") ]
+  if ticks = 2100 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage2.png") ]
+  if ticks = 3100 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage3.png") ]
+
+
+
+
+end
+
+to view-stages-figs
+
+  if ticks = 1000
+  [
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage1.png")
+    ask turtles [ ht ]
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage1_hidden.png")
+    ask turtles [ show-turtle ]
+  ]
+  if ticks = 2100
+  [
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage2.png")
+    ask turtles [ ht ]
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage2_hidden.png")
+    ask turtles [ show-turtle ]
+  ]
+  if ticks = 3100
+  [
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage3.png")
+    ask turtles [ ht ]
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage3_hidden.png")
+    ask turtles [ show-turtle ]
+  ]
+
+
+
+
+end
