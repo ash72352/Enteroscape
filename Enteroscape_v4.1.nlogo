@@ -1003,9 +1003,9 @@ end
 
 to view-stages
 
-  if ticks = 1000 [ export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage1.png") ]
-  if ticks = 2100 [ export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage2.png") ]
-  if ticks = 3100 [ export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage3.png") ]
+  if ticks = 1000 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage1.png") ]
+  if ticks = 2100 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage2.png") ]
+  if ticks = 3100 [ export-view ( word "D:\\Param_Sweep_Stages_Current\\" behaviorspace-run-number "_stage3.png") ]
 
 
 
@@ -1016,23 +1016,23 @@ to view-stages-figs
 
   if ticks = 1000
   [
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage1.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage1.png")
     ask turtles [ ht ]
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage1_hidden.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage1_hidden.png")
     ask turtles [ show-turtle ]
   ]
   if ticks = 2100
   [
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage2.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage2.png")
     ask turtles [ ht ]
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage2_hidden.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage2_hidden.png")
     ask turtles [ show-turtle ]
   ]
   if ticks = 3100
   [
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage3.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage3.png")
     ask turtles [ ht ]
-    export-view ( word "D:\\Thesis_Param_Sweep_Stages_Current\\stage3_hidden.png")
+    export-view ( word "D:\\Param_Sweep_Stages_Current\\stage3_hidden.png")
     ask turtles [ show-turtle ]
   ]
 
